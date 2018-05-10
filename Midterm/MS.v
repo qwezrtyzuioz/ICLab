@@ -38,19 +38,24 @@ parameter	ST_IDLE		=	4'd0,
 			ST_PRE		= 	4'd2,
 			ST_EXE		= 	4'd3,
 			ST_DUMP		= 	4'd4,
-			ST_OUTPUT	=	4'd5,
-			ST_FINAL	=	4'd6;
+			ST_REST		= 	4'd5,
+			ST_OUTPUT	=	4'd6,
+			ST_FINAL	=	4'd7;
 
 //---------------------------------------------------------------------
 //   WIRE AND REG DECLARATION                             
 //---------------------------------------------------------------------
 
 integer i, j;
-reg 	  finish, finish_d,
-		  pre_counter,
+
+wire	  WEN;
+wire[7:0] Q, A;
+
+reg		  finish, finish_d,
+		  pre_counter, exe_counter,
 		  wall[14: 0][14: 0], gray[15: 0][15: 0];
 reg[1: 0] dir[14: 0][14: 0],
-		  exe_counter, found;	
+		  num_exe, found;	
 reg[3: 0] cs, ns,
 		  init_x, init_y,
 		  p1_x, p1_y, p2_x, p2_y, p3_x, p3_y,
@@ -113,11 +118,14 @@ always@(*) begin
 		ST_DUMP: begin
 			if(!finish_d)
 				ns= ST_DUMP;
-			else if(exe_counter== 2'd2)
-				ns= ST_OUTPUT;
+			else if(num_exe== 2'd2)
+				ns= ST_REST;
 			else
 				ns= ST_PRE;
 		end
+		
+		ST_REST: 
+			ns= ST_OUTPUT;
 		
 		ST_OUTPUT: begin
 			if(out_counter== (point[1]+ 8'd1)) 
@@ -314,7 +322,7 @@ always@(posedge clk or negedge rst_n) begin
 		end
 		
 	end
-	else if(ns== ST_EXE) begin
+	else if(ns== ST_EXE && exe_counter== 1'b1) begin
 		
 		p_start<= p_start+ 5'd1;
 	
@@ -510,11 +518,23 @@ always@(*) begin
 	
 	now_x= queue[p_start][7: 4];
 	now_y= queue[p_start][3: 0];
-	
-	visitable[0]= (~gray[now_x][now_y- 4'd1]);
-	visitable[1]= (~gray[now_x+ 4'd1][now_y]);
-	visitable[2]= (~gray[now_x][now_y+ 4'd1]);
-	visitable[3]= (~gray[now_x- 4'd1][now_y]);
+
+end
+
+always@(posedge clk or negedge rst_n) begin
+
+	if(!rst_n) begin
+		visitable[0]<= 1'b0;
+		visitable[1]<= 1'b0;
+		visitable[2]<= 1'b0;
+		visitable[3]<= 1'b0;
+	end
+	else begin
+		visitable[0]<= (~gray[now_x][now_y- 4'd1]);
+		visitable[1]<= (~gray[now_x+ 4'd1][now_y]);
+		visitable[2]<= (~gray[now_x][now_y+ 4'd1]);
+		visitable[3]<= (~gray[now_x- 4'd1][now_y]);
+	end
 	
 end
 
@@ -547,14 +567,25 @@ end
 always@(posedge clk or negedge rst_n) begin
 	
 	if(!rst_n) begin
-		exe_counter<= 2'd0;
+		num_exe<= 2'd0;
 	end
 	else if(cs== ST_DUMP && finish_d) begin
-		exe_counter<= exe_counter+ 2'd1;
+		num_exe<= num_exe+ 2'd1;
 	end
 	else begin
-		exe_counter<= exe_counter;
+		num_exe<= num_exe;
 	end
+	
+end
+
+always@(posedge clk or negedge rst_n) begin
+	
+	if(!rst_n) 
+		exe_counter<= 1'd0;
+	else if(cs== ST_EXE)
+		exe_counter<= exe_counter+ 1'b1;
+	else
+		exe_counter<= 1'b0;
 	
 end
 
@@ -591,13 +622,13 @@ always@(posedge clk or negedge rst_n) begin
 	if(!rst_n) begin
 		out_counter<= 8'd0;
 	end
-	else if(ns== ST_DUMP) begin
+	else if(ns== ST_REST) begin
 		out_counter<= point[0];
 	end
 	else if(ns== ST_OUTPUT) begin
 		if(out_counter== 8'd1)
 			out_counter<= point[1];
-		else if(out_counter== (point[0]+ 8'd1)) 
+		else if(out_counter== (point[0]+ 8'd2)) 
 			out_counter<= point[2];
 		else
 			out_counter<= out_counter- 8'd1;
@@ -616,7 +647,7 @@ always@(posedge clk or negedge rst_n) begin
 		point[2]<= 8'd0;
 	end
 	else if(cs== ST_DUMP) begin
-		point[exe_counter]<= dump_counter;
+		point[num_exe]<= dump_counter;
 	end
 	else begin
 		point[0]<= point[0];
@@ -655,6 +686,19 @@ end
 //   Dump Logic                                        
 //---------------------------------------------------------------------
 
+assign WEN= (cs== ST_DUMP || cs== ST_EXE)? 1'b0: 1'b1;
+assign A= (cs== ST_OUTPUT || cs== ST_REST)? out_counter: dump_counter;
+
+RA1SH U_SRAM(
+	.A(A),
+	.D(D),
+	.CLK(clk),
+	.CEN(1'b0),
+	.WEN(WEN),
+	.OEN(1'b0),
+	.Q(Q)
+);
+
 always@(posedge clk or negedge rst_n) begin
 	
 	if(!rst_n) begin
@@ -666,24 +710,24 @@ always@(posedge clk or negedge rst_n) begin
 	
 end
 
-always@(posedge clk or negedge rst_n) begin
-	
-	if(!rst_n) begin
-	
-		for(i= 0; i< 256; i= i+ 1)
-			mem[i]<= 8'd0;
-	end
-	else if(cs== ST_DUMP) begin
-	
-		mem[dump_counter]<= D;
-	end
-	else begin
-	
-		for(i= 0; i< 256; i= i+ 1)
-			mem[i]<= mem[i];
-	end
-	
-end
+//always@(posedge clk or negedge rst_n) begin
+//	
+//	if(!rst_n) begin
+//	
+//		for(i= 0; i< 256; i= i+ 1)
+//			mem[i]<= 8'd0;
+//	end
+//	else if(cs== ST_DUMP) begin
+//	
+//		mem[dump_counter]<= D;
+//	end
+//	else begin
+//	
+//		for(i= 0; i< 256; i= i+ 1)
+//			mem[i]<= mem[i];
+//	end
+//	
+//end
 
 always@(*) begin
 	
@@ -724,15 +768,15 @@ always@(posedge clk or negedge rst_n) begin
 		out_x<= 4'b0;
 		out_y<= 4'b0;
 	end
-	else if(ns== ST_OUTPUT) begin
+	else if(cs== ST_OUTPUT) begin
 		out_valid<= 1'b1;
-		out_x<= mem[out_counter][7: 4];
-		out_y<= mem[out_counter][3: 0];
+		out_x<= Q[7: 4];
+		out_y<= Q[3: 0];
 	end
-	else if(ns== ST_FINAL) begin
+	else if(cs== ST_FINAL) begin
 		out_valid<= 1'b1;
-		out_x<= mem[point[1]+ 8'd1][7: 4];
-		out_y<= mem[point[1]+ 8'd1][3: 0];
+		out_x<= Q[7: 4];
+		out_y<= Q[3: 0];
 	end
 	else begin
 		out_valid<= 1'b0;
